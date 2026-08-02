@@ -1,0 +1,8 @@
+.github/
+.DS_Store
+node_modules/
+.env
+dist/
+frontend/dist/
+*/package-lock.json
+settings.json
