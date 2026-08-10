@@ -13,17 +13,36 @@ export async function createBookingController(req, res) {
 export async function getBookingByPNR(req, res) {
   try {
     const { pnr } = req.params;
+    // Even if we remove CASE-END it behaves the same way, because we are using LEFT JOIN
+    // for SEAT and WAITING_LIST tables. If there is no matching record in these tables,
+    // the corresponding columns will be NULL, which is what we want for waiting list passengers.
     const [rows] = await pool.query(
-      `SELECT b.booking_id, b.pnr_number, b.journey_date, b.total_fare, b.booking_status,
+      `SELECT b.booking_id, b.pnr_number, b.total_fare, b.booking_status,
+              sch.run_date AS journey_date, sch.departure_time, sch.arrival_time,
               tr.train_name, tr.train_number, c.class_name,
               p.passenger_name, p.age, p.gender, p.ticket_status,
-              s.coach_number, s.seat_number, s.berth_type, wl.wl_position
+              CASE
+                WHEN p.ticket_status = 'WL' THEN NULL
+                ELSE s.coach_number
+              END AS coach_number,
+              CASE
+                WHEN p.ticket_status = 'WL' THEN NULL
+                ELSE s.seat_number
+              END AS seat_number,
+              CASE
+                WHEN p.ticket_status = 'WL' THEN NULL
+                ELSE s.berth_type
+              END AS berth_type,
+              CASE
+                WHEN p.ticket_status = 'WL' THEN wl.wl_position
+                ELSE NULL
+              END AS wl_position
        FROM BOOKING b
        JOIN SCHEDULE sch ON sch.schedule_id = b.schedule_id
        JOIN TRAIN tr ON tr.train_id = sch.train_id
-       JOIN CLASS c ON c.class_id = b.class_id
        JOIN PASSENGER p ON p.booking_id = b.booking_id
        LEFT JOIN SEAT s ON s.seat_id = p.seat_id
+       LEFT JOIN CLASS c ON c.class_id = b.class_id
        LEFT JOIN WAITING_LIST wl ON wl.passenger_id = p.passenger_id
        WHERE b.pnr_number = ?`,
       [pnr]
@@ -40,16 +59,32 @@ export async function getBookingsByUser(req, res) {
   try {
     const { userId } = req.params;
     const [rows] = await pool.query(
-      `SELECT b.booking_id, b.pnr_number, b.journey_date, b.total_fare, b.booking_status,
+      `SELECT b.booking_id, b.pnr_number, sch.run_date AS journey_date, b.total_fare, b.booking_status,
+              sch.departure_time, sch.arrival_time,
               tr.train_name, tr.train_number, c.class_name,
-              p.passenger_name, p.ticket_status, s.coach_number, s.seat_number, s.berth_type,
-              wl.wl_position
+              p.passenger_name, p.ticket_status,
+              CASE
+                WHEN p.ticket_status = 'WL' THEN NULL
+                ELSE s.coach_number
+              END AS coach_number,
+              CASE
+                WHEN p.ticket_status = 'WL' THEN NULL
+                ELSE s.seat_number
+              END AS seat_number,
+              CASE
+                WHEN p.ticket_status = 'WL' THEN NULL
+                ELSE s.berth_type
+              END AS berth_type,
+              CASE
+                WHEN p.ticket_status = 'WL' THEN wl.wl_position
+                ELSE NULL
+              END AS wl_position
        FROM BOOKING b
        JOIN SCHEDULE sch ON sch.schedule_id = b.schedule_id
        JOIN TRAIN tr ON tr.train_id = sch.train_id
-       JOIN CLASS c ON c.class_id = b.class_id
        JOIN PASSENGER p ON p.booking_id = b.booking_id
        LEFT JOIN SEAT s ON s.seat_id = p.seat_id
+       LEFT JOIN CLASS c ON c.class_id = b.class_id
        LEFT JOIN WAITING_LIST wl ON wl.passenger_id = p.passenger_id
        WHERE b.user_id = ?
        ORDER BY b.booking_id DESC`,
@@ -68,8 +103,9 @@ export async function cancelBooking(req, res) {
     const { id } = req.params;
     await connection.beginTransaction();
 
+    // lock the booking and passenger rows to prevent race conditions during cancellation and seat reallocation
     const [bookingRows] = await connection.query(
-      `SELECT b.booking_id, b.booking_status, p.passenger_id, p.seat_id
+      `SELECT b.booking_id, b.booking_status, b.schedule_id, b.class_id, p.passenger_id, p.seat_id
        FROM BOOKING b
        JOIN PASSENGER p ON p.booking_id = b.booking_id
        WHERE b.booking_id = ?
@@ -78,7 +114,7 @@ export async function cancelBooking(req, res) {
       [id]
     );
 
-    if (!bookingRows.length) {
+    if (!bookingRows.length) { // If no booking is found, rollback the transaction and return a 404 response
       await connection.rollback();
       return res.status(404).json({ message: 'Booking not found' });
     }
@@ -98,12 +134,26 @@ export async function cancelBooking(req, res) {
     const cancellationCharge = Number((amount * 0.1).toFixed(2));
     const refundAmount = Number((amount - cancellationCharge).toFixed(2));
 
+    // update booking status to cancelled
     await connection.query('UPDATE BOOKING SET booking_status = ? WHERE booking_id = ?', ['CANCELLED', id]);
 
-    if (booking.passenger_id) {
-      await connection.query('DELETE FROM WAITING_LIST WHERE passenger_id = ?', [booking.passenger_id]);
-      await connection.query('UPDATE PASSENGER SET ticket_status = ?, seat_id = NULL WHERE passenger_id = ?', ['WL', booking.passenger_id]);
+    // free up the seat if it was assigned, and update the seat allocation status to AVAILABLE
+    if (booking.seat_id) {
+      await connection.query(
+        `UPDATE SEAT_ALLOCATION
+         SET status = 'AVAILABLE'
+         WHERE schedule_id = ?
+           AND seat_id = ?
+           AND status = 'BOOKED'`,
+        [booking.schedule_id, booking.seat_id]
+      );
     }
+
+    // remove the passenger from the waiting list if they were on it
+    await connection.query('DELETE FROM WAITING_LIST WHERE passenger_id = ?', [booking.passenger_id]);
+
+    // free up the seat_id in the PASSENGER table to indicate that the passenger no longer has an assigned seat
+    await connection.query('UPDATE PASSENGER SET seat_id = NULL WHERE passenger_id = ?', [booking.passenger_id]);
 
     await connection.query(
       `INSERT INTO CANCELLATION

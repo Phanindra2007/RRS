@@ -71,11 +71,22 @@ CREATE TABLE IF NOT EXISTS SEAT (
   class_id INT NOT NULL,
   coach_number VARCHAR(10) NOT NULL,
   seat_number INT NOT NULL,
-  berth_type ENUM('LB','MB','UB','SL','SU') NOT NULL,
+  berth_type ENUM('LLB','LMB','LUB','RLB','RMB','RUB','SL','SU') NOT NULL,
   is_active TINYINT(1) NOT NULL DEFAULT 1,
   CONSTRAINT fk_seat_train FOREIGN KEY (train_id) REFERENCES TRAIN(train_id),
   CONSTRAINT fk_seat_class FOREIGN KEY (class_id) REFERENCES `CLASS`(class_id),
   CONSTRAINT uq_seat UNIQUE (train_id, class_id, coach_number, seat_number)
+);
+
+CREATE TABLE IF NOT EXISTS SEAT_ALLOCATION (
+  allocation_id INT PRIMARY KEY AUTO_INCREMENT,
+  schedule_id INT NOT NULL,
+  seat_id INT NOT NULL,
+  status ENUM('AVAILABLE','BOOKED') NOT NULL DEFAULT 'AVAILABLE',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  CONSTRAINT fk_allocation_schedule FOREIGN KEY (schedule_id) REFERENCES `SCHEDULE`(schedule_id),
+  CONSTRAINT fk_allocation_seat FOREIGN KEY (seat_id) REFERENCES SEAT(seat_id),
+  CONSTRAINT uq_allocation UNIQUE (schedule_id, seat_id)
 );
 
 CREATE TABLE IF NOT EXISTS BOOKING (
@@ -86,7 +97,6 @@ CREATE TABLE IF NOT EXISTS BOOKING (
   class_id INT NOT NULL,
   source_station_id INT NOT NULL,
   destination_station_id INT NOT NULL,
-  journey_date DATE NOT NULL,
   booking_status ENUM('ACTIVE','CANCELLED') NOT NULL DEFAULT 'ACTIVE',
   total_fare DECIMAL(10,2) NOT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -97,13 +107,15 @@ CREATE TABLE IF NOT EXISTS BOOKING (
   CONSTRAINT fk_booking_destination FOREIGN KEY (destination_station_id) REFERENCES STATION(station_id)
 );
 
+// COMMENT: why BOOKING.class_id is not redundant because, PASSENGER.seat_id only gets allocated if seats are available in the same class as the booking. So, we can use BOOKING.class_id to filter passengers in the waiting list for a specific class.
+
 CREATE TABLE IF NOT EXISTS PASSENGER (
   passenger_id INT PRIMARY KEY AUTO_INCREMENT,
   booking_id INT NOT NULL,
   passenger_name VARCHAR(100) NOT NULL,
   age INT NOT NULL,
   gender ENUM('M','F','O') NOT NULL,
-  berth_preference ENUM('LB','MB','UB','SL','SU') DEFAULT NULL,
+  berth_preference ENUM('LLB','LMB','LUB','RLB','RMB','RUB','SL','SU') DEFAULT NULL,
   ticket_status ENUM('CNF','WL') NOT NULL,
   seat_id INT DEFAULT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -136,20 +148,14 @@ CREATE TABLE IF NOT EXISTS CANCELLATION (
 CREATE TABLE IF NOT EXISTS WAITING_LIST (
   waiting_id INT PRIMARY KEY AUTO_INCREMENT,
   passenger_id INT NOT NULL UNIQUE,
-  schedule_id INT NOT NULL,
-  class_id INT NOT NULL,
-  journey_date DATE NOT NULL,
   wl_position INT NOT NULL,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  CONSTRAINT fk_waiting_passenger FOREIGN KEY (passenger_id) REFERENCES PASSENGER(passenger_id),
-  CONSTRAINT fk_waiting_schedule FOREIGN KEY (schedule_id) REFERENCES `SCHEDULE`(schedule_id),
-  CONSTRAINT fk_waiting_class FOREIGN KEY (class_id) REFERENCES `CLASS`(class_id),
-  CONSTRAINT uq_waiting_position UNIQUE (schedule_id, class_id, journey_date, wl_position)
+  CONSTRAINT fk_waiting_passenger FOREIGN KEY (passenger_id) REFERENCES PASSENGER(passenger_id)
 );
 
 CREATE INDEX idx_booking_pnr ON BOOKING(pnr_number);
 CREATE INDEX idx_booking_user ON BOOKING(user_id);
-CREATE INDEX idx_booking_journey ON BOOKING(journey_date);
+CREATE INDEX idx_booking_schedule ON BOOKING(schedule_id);
 CREATE INDEX idx_train_number ON TRAIN(train_number);
 CREATE INDEX idx_station_code ON STATION(station_code);
 
@@ -161,7 +167,6 @@ FOR EACH ROW
 trg_block: BEGIN
   DECLARE v_schedule_id INT;
   DECLARE v_class_id INT;
-  DECLARE v_journey_date DATE;
   DECLARE v_waiting_id INT;
   DECLARE v_waiting_passenger_id INT;
   DECLARE v_waiting_position INT;
@@ -170,19 +175,26 @@ trg_block: BEGIN
     LEAVE trg_block;
   END IF;
 
-  SELECT schedule_id, class_id, journey_date
-  INTO v_schedule_id, v_class_id, v_journey_date
-  FROM BOOKING
-  WHERE booking_id = NEW.booking_id
+  SELECT b.schedule_id
+  INTO v_schedule_id
+  FROM BOOKING b
+  WHERE b.booking_id = NEW.booking_id
   LIMIT 1;
 
-  SELECT waiting_id, passenger_id, wl_position
+  SELECT s.class_id
+  INTO v_class_id
+  FROM SEAT s
+  WHERE s.seat_id = NEW.freed_seat_id
+  LIMIT 1;
+
+  SELECT wl.waiting_id, p.passenger_id, wl.wl_position
   INTO v_waiting_id, v_waiting_passenger_id, v_waiting_position
-  FROM WAITING_LIST
-  WHERE schedule_id = v_schedule_id
-    AND class_id = v_class_id
-    AND journey_date = v_journey_date
-  ORDER BY wl_position
+  FROM WAITING_LIST wl
+  JOIN PASSENGER p ON p.passenger_id = wl.passenger_id
+  JOIN BOOKING b ON b.booking_id = p.booking_id
+  WHERE b.schedule_id = v_schedule_id
+    AND b.class_id = v_class_id
+  ORDER BY wl.wl_position
   LIMIT 1;
 
   IF v_waiting_id IS NOT NULL THEN
@@ -192,12 +204,16 @@ trg_block: BEGIN
 
     DELETE FROM WAITING_LIST WHERE waiting_id = v_waiting_id;
 
-    UPDATE WAITING_LIST
-    SET wl_position = wl_position - 1
-    WHERE schedule_id = v_schedule_id
-      AND class_id = v_class_id
-      AND journey_date = v_journey_date
-      AND wl_position > v_waiting_position;
+    UPDATE WAITING_LIST wl
+    JOIN PASSENGER p ON p.passenger_id = wl.passenger_id
+    JOIN BOOKING b ON b.booking_id = p.booking_id
+    SET wl.wl_position = wl.wl_position - 1
+    WHERE b.schedule_id = v_schedule_id
+      AND b.class_id = v_class_id
+      AND wl.wl_position > v_waiting_position;
   END IF;
 END $$
 DELIMITER ;
+
+// COMMENT: `DELIMITER $$` = for this block, stop using `;` as the end marker, `END $$` = this trigger definition ends here, `DELIMITER ;` = go back to normal `;`
+// COMMENT: A seat became free, Find the next person waiting for that same journey and class, Give them that seat, Move the remaining waiting-list positions up

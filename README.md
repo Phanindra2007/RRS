@@ -46,7 +46,7 @@ SOURCE /absolute/path/backend/database/seed.sql;
 
 - `USER`, `ADMIN`, `TRAIN`, `STATION`, `ROUTE`
 - `CLASS`, `SCHEDULE`, `BOOKING`, `PASSENGER`
-- `SEAT`, `PAYMENT`, `CANCELLATION`, `WAITING_LIST`
+- `SEAT`, `SEAT_ALLOCATION`, `PAYMENT`, `CANCELLATION`, `WAITING_LIST`
 
 ### Key rules enforced
 

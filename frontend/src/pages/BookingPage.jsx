@@ -36,7 +36,6 @@ export default function BookingPage() {
         classId: Number(form.classId),
         sourceStationId,
         destinationStationId,
-        journeyDate: state.date,
         berthPreference: form.berthPreference,
         passengerName: form.passengerName,
         age: Number(form.age),

@@ -21,12 +21,12 @@ export async function getSeatAvailability(req, res) {
       `SELECT COUNT(*) AS booked
        FROM PASSENGER p
        JOIN BOOKING b ON b.booking_id = p.booking_id
+       LEFT JOIN SEAT s ON s.seat_id = p.seat_id
        WHERE b.schedule_id = ?
          AND b.class_id = ?
-         AND b.journey_date = ?
          AND b.booking_status = 'ACTIVE'
          AND p.ticket_status = 'CNF'`,
-      [scheduleId, classId, date]
+      [scheduleId, classId]
     );
 
     return res.json({
