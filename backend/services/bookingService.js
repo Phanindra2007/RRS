@@ -61,6 +61,7 @@ async function getPreferredSeat(connection, { trainId, classId, scheduleId, bert
     }
   }
 
+  // allocating other birth type if preferred birth is not available, or if no preference was specified.
   const [fallback] = await connection.query(
     `SELECT sa.allocation_id, s.seat_id, s.coach_number, s.seat_number, s.berth_type
      FROM SEAT_ALLOCATION sa
@@ -200,7 +201,7 @@ export async function createBooking(payload) {
          WHERE b.schedule_id = ? AND b.class_id = ?
          FOR UPDATE`,
         [scheduleId, classId]
-      );
+      ); // using FOR UPDATE so that each passenger get unique waiting list position even if multiple passengers are to be added in waiting list at the same time.
       wlPosition = wlRows[0].next_position;
       await connection.query(
         `INSERT INTO WAITING_LIST (passenger_id, wl_position)

@@ -12,27 +12,24 @@ export async function getSeatAvailability(req, res) {
 
     const trainId = scheduleRows[0].train_id;
 
-    const [totals] = await pool.query(
-      'SELECT COUNT(*) AS total FROM SEAT WHERE train_id = ? AND class_id = ? AND is_active = 1',
-      [trainId, classId]
-    );
-
-    const [occupied] = await pool.query(
-      `SELECT COUNT(*) AS booked
-       FROM PASSENGER p
-       JOIN BOOKING b ON b.booking_id = p.booking_id
-       LEFT JOIN SEAT s ON s.seat_id = p.seat_id
-       WHERE b.schedule_id = ?
-         AND b.class_id = ?
-         AND b.booking_status = 'ACTIVE'
-         AND p.ticket_status = 'CNF'`,
-      [scheduleId, classId]
+    const [[data]] = await pool.query(
+      `SELECT
+        COUNT(s.seat_id) AS total_seats,
+        SUM(CASE WHEN sa.status = 'BOOKED' THEN 1 ELSE 0 END) AS booked_seats,
+        COUNT(s.seat_id) - SUM(CASE WHEN sa.status = 'BOOKED' THEN 1 ELSE 0 END) AS available_seats
+      FROM SEAT s
+      LEFT JOIN SEAT_ALLOCATION sa
+        ON sa.seat_id = s.seat_id
+      AND sa.schedule_id = ?
+      WHERE s.train_id = ?
+        AND s.class_id = ?
+        AND s.is_active = 1;`
     );
 
     return res.json({
-      totalSeats: totals[0].total,
-      confirmedBooked: occupied[0].booked,
-      availableSeats: totals[0].total - occupied[0].booked
+      totalSeats: data.total_seats,
+      confirmedBooked: data.booked_seats,
+      availableSeats: data.available_seats
     });
   } catch (error) {
     return res.status(500).json({ message: 'Seat availability check failed', error: error.message });

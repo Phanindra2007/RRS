@@ -27,6 +27,8 @@ CREATE TABLE IF NOT EXISTS STATION (
   state VARCHAR(100) NOT NULL
 );
 
+CREATE INDEX idx_station_code ON STATION(station_code);
+
 CREATE TABLE IF NOT EXISTS TRAIN (
   train_id INT PRIMARY KEY AUTO_INCREMENT,
   train_name VARCHAR(100) NOT NULL,
@@ -35,6 +37,8 @@ CREATE TABLE IF NOT EXISTS TRAIN (
   managed_by_admin INT,
   CONSTRAINT fk_train_admin FOREIGN KEY (managed_by_admin) REFERENCES ADMIN(admin_id)
 );
+
+CREATE INDEX idx_train_number ON TRAIN(train_number);
 
 CREATE TABLE IF NOT EXISTS ROUTE (
   route_id INT PRIMARY KEY AUTO_INCREMENT,
@@ -107,7 +111,11 @@ CREATE TABLE IF NOT EXISTS BOOKING (
   CONSTRAINT fk_booking_destination FOREIGN KEY (destination_station_id) REFERENCES STATION(station_id)
 );
 
-// COMMENT: why BOOKING.class_id is not redundant because, PASSENGER.seat_id only gets allocated if seats are available in the same class as the booking. So, we can use BOOKING.class_id to filter passengers in the waiting list for a specific class.
+CREATE INDEX idx_booking_pnr ON BOOKING(pnr_number);
+CREATE INDEX idx_booking_user ON BOOKING(user_id);
+CREATE INDEX idx_booking_schedule ON BOOKING(schedule_id);
+
+-- why BOOKING.class_id is not redundant because, PASSENGER.seat_id only gets allocated if seats are available in the same class as the booking. So, we can use BOOKING.class_id to filter passengers in the waiting list for a specific class.
 
 CREATE TABLE IF NOT EXISTS PASSENGER (
   passenger_id INT PRIMARY KEY AUTO_INCREMENT,
@@ -152,12 +160,6 @@ CREATE TABLE IF NOT EXISTS WAITING_LIST (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   CONSTRAINT fk_waiting_passenger FOREIGN KEY (passenger_id) REFERENCES PASSENGER(passenger_id)
 );
-
-CREATE INDEX idx_booking_pnr ON BOOKING(pnr_number);
-CREATE INDEX idx_booking_user ON BOOKING(user_id);
-CREATE INDEX idx_booking_schedule ON BOOKING(schedule_id);
-CREATE INDEX idx_train_number ON TRAIN(train_number);
-CREATE INDEX idx_station_code ON STATION(station_code);
 
 DELIMITER $$
 DROP TRIGGER IF EXISTS trg_promote_waiting_list_after_cancel $$
@@ -204,16 +206,17 @@ trg_block: BEGIN
 
     DELETE FROM WAITING_LIST WHERE waiting_id = v_waiting_id;
 
-    UPDATE WAITING_LIST wl
-    JOIN PASSENGER p ON p.passenger_id = wl.passenger_id
-    JOIN BOOKING b ON b.booking_id = p.booking_id
-    SET wl.wl_position = wl.wl_position - 1
-    WHERE b.schedule_id = v_schedule_id
-      AND b.class_id = v_class_id
-      AND wl.wl_position > v_waiting_position;
+    -- exact waiting list position is not important, just relative order is what we care.
+    -- UPDATE WAITING_LIST wl
+    -- JOIN PASSENGER p ON p.passenger_id = wl.passenger_id
+    -- JOIN BOOKING b ON b.booking_id = p.booking_id
+    -- SET wl.wl_position = wl.wl_position - 1
+    -- WHERE b.schedule_id = v_schedule_id
+    --   AND b.class_id = v_class_id
+    --   AND wl.wl_position > v_waiting_position;
   END IF;
 END $$
 DELIMITER ;
 
-// COMMENT: `DELIMITER $$` = for this block, stop using `;` as the end marker, `END $$` = this trigger definition ends here, `DELIMITER ;` = go back to normal `;`
-// COMMENT: A seat became free, Find the next person waiting for that same journey and class, Give them that seat, Move the remaining waiting-list positions up
+--`DELIMITER $$` = for this block, stop using `;` as the end marker, `END $$` = this trigger definition ends here, `DELIMITER ;` = go back to normal `;`
+--A seat became free, Find the next person waiting for that same journey and class, Give them that seat, Move the remaining waiting-list positions up

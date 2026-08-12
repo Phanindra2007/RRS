@@ -9,7 +9,10 @@ export async function searchTrains(req, res) {
 
     const [rows] = await pool.query(
       `SELECT sch.schedule_id, sch.run_date, tr.train_id, tr.train_name, tr.train_number,
-              s1.station_name AS source_station, s2.station_name AS destination_station
+              s1.station_name AS source_station, s2.station_name AS destination_station,
+              r1.arrival_time AS source_arrival, r1.departure_time AS source_departure,
+              r2.arrival_time AS destination_arrival, r2.departure_time AS destination_departure,
+              (r2.distance_from_source - r1.distance_from_source) AS distance
        FROM SCHEDULE sch
        JOIN TRAIN tr ON tr.train_id = sch.train_id
        JOIN ROUTE r1 ON r1.train_id = tr.train_id
@@ -45,6 +48,8 @@ export async function getTrainById(req, res) {
       [id]
     );
 
+    // trainRows[0] is a object and ...trainRows[0] is a "spread operator" that spreads the properties
+    // of the object into a new object, and then we add the route property to that new object.
     return res.json({ ...trainRows[0], route: routeRows });
   } catch (error) {
     return res.status(500).json({ message: 'Failed to fetch train details', error: error.message });

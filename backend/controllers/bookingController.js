@@ -134,10 +134,18 @@ export async function cancelBooking(req, res) {
     const cancellationCharge = Number((amount * 0.1).toFixed(2));
     const refundAmount = Number((amount - cancellationCharge).toFixed(2));
 
+    // If its a confirm ticket:
     // update booking status to cancelled
     await connection.query('UPDATE BOOKING SET booking_status = ? WHERE booking_id = ?', ['CANCELLED', id]);
+    // free up the seat_id in the PASSENGER table to indicate that the passenger no longer has an assigned seat
+    await connection.query('UPDATE PASSENGER SET seat_id = NULL WHERE passenger_id = ?', [booking.passenger_id]);
 
+    // If its a waiting list:
+    // remove the passenger from the waiting list if they were on it
+    await connection.query('DELETE FROM WAITING_LIST WHERE passenger_id = ?', [booking.passenger_id]);
+    
     // free up the seat if it was assigned, and update the seat allocation status to AVAILABLE
+    // and add a record in the CANCELLATION table to log the cancellation details, including the freed seat_id
     if (booking.seat_id) {
       await connection.query(
         `UPDATE SEAT_ALLOCATION
@@ -147,20 +155,14 @@ export async function cancelBooking(req, res) {
            AND status = 'BOOKED'`,
         [booking.schedule_id, booking.seat_id]
       );
+
+      await connection.query(
+        `INSERT INTO CANCELLATION
+        (booking_id, cancelled_at, cancellation_charge, refund_amount, freed_seat_id)
+        VALUES (?, NOW(), ?, ?, ?)`,
+        [id, cancellationCharge, refundAmount, booking.seat_id]
+      );
     }
-
-    // remove the passenger from the waiting list if they were on it
-    await connection.query('DELETE FROM WAITING_LIST WHERE passenger_id = ?', [booking.passenger_id]);
-
-    // free up the seat_id in the PASSENGER table to indicate that the passenger no longer has an assigned seat
-    await connection.query('UPDATE PASSENGER SET seat_id = NULL WHERE passenger_id = ?', [booking.passenger_id]);
-
-    await connection.query(
-      `INSERT INTO CANCELLATION
-       (booking_id, cancelled_at, cancellation_charge, refund_amount, freed_seat_id)
-       VALUES (?, NOW(), ?, ?, ?)`,
-      [id, cancellationCharge, refundAmount, booking.seat_id]
-    );
 
     await connection.commit();
     return res.json({ message: 'Booking cancelled successfully', refundAmount, cancellationCharge });
